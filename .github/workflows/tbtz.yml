@@ -2,180 +2,150 @@ name: Auto Sync from bqlpfy/forward-panel
 
 on:
   schedule:
-    - cron: '0 0 * * *'
-  workflow_dispatch:
-
-env:
-  GIT_USER_NAME: GitHub Actions Sync
-  GIT_USER_EMAIL: actions@github.com
-  SOURCE_REPO: bqlpfy/forward-panel
-  TARGET_REPO: 13ztop/forward-panel
+    - cron: '0 0 * * *'  # 每天UTC时间0点（北京时间8点）自动同步
+  workflow_dispatch:      # 允许手动触发
 
 jobs:
   sync:
     runs-on: ubuntu-latest
-
     steps:
-      # 验证 Secrets
+      # 步骤 1: 验证必要的 Secrets
       - name: Verify Secrets
         run: |
           if [ -z "${{ secrets.SYNC_TOKEN }}" ]; then
             echo "::error::SYNC_TOKEN未设置"
             exit 1
           fi
-
+          
           if [ -n "${{ secrets.TELEGRAM_BOT_TOKEN }}" ] && [ -n "${{ secrets.TELEGRAM_CHAT_ID }}" ]; then
             echo "TELEGRAM_ENABLED=true" >> $GITHUB_ENV
           else
             echo "TELEGRAM_ENABLED=false" >> $GITHUB_ENV
           fi
+          echo "Secrets验证通过"
 
-      # 获取默认分支
+      # 步骤 2: 获取目标仓库默认分支
       - name: Detect default branch
-        id: branch_detector
         run: |
           DEFAULT_BRANCH=$(curl -s -H "Authorization: token ${{ secrets.SYNC_TOKEN }}" \
-          "https://api.github.com/repos/${{ env.TARGET_REPO }}" | jq -r .default_branch)
-
+          "https://api.github.com/repos/13ztop/forward-panel" | jq -r .default_branch)
+          
           if [ -z "$DEFAULT_BRANCH" ] || [ "$DEFAULT_BRANCH" = "null" ]; then
-            echo "::warning::无法获取默认分支，使用 main"
             DEFAULT_BRANCH="main"
           fi
-
           echo "DEFAULT_BRANCH=$DEFAULT_BRANCH" >> $GITHUB_ENV
+          echo "使用分支: $DEFAULT_BRANCH"
 
-      # 检出目标仓库
-      - uses: actions/checkout@v4
+      # 步骤 3: 设置时间（提前）
+      - name: Set Shanghai time
+        run: |
+          CURRENT_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M %Z')
+          echo "CURRENT_TIME=$CURRENT_TIME" >> $GITHUB_ENV
+
+      # 步骤 4: 检出目标仓库
+      - name: Checkout target repo
+        uses: actions/checkout@v4
         with:
           token: ${{ secrets.SYNC_TOKEN }}
-          repository: ${{ env.TARGET_REPO }}
+          repository: 13ztop/forward-panel
           path: target-repo
           ref: ${{ env.DEFAULT_BRANCH }}
-          fetch-depth: 0
 
-      # 克隆源仓库
-      - run: git clone --depth 1 https://github.com/${{ env.SOURCE_REPO }}.git source-repo
+      # 步骤 5: 克隆源仓库并获取源仓库提交哈希
+      - name: Clone source repo
+        run: |
+          git clone --depth 1 https://github.com/bqlpfy/forward-panel.git source-repo
+          cd source-repo
+          echo "SOURCE_COMMIT_HASH=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
+          echo "SOURCE_COMMIT_LINK=https://github.com/bqlpfy/forward-panel/commit/$(git rev-parse HEAD)" >> $GITHUB_ENV
+          echo "源仓库克隆完成，最新提交: $(git rev-parse --short HEAD)"
 
-      # 设置保护文件列表
-      - name: Set protected files list
+      # 步骤 6: 创建统一备份目录
+      - name: Create backup directory
         run: |
           mkdir -p /tmp/repo-backup
-          cat <<EOF > /tmp/repo-backup/protected-files.list
-README*.md
-LICENSE*
-.github/workflows
-config
-*.env
-docker-compose*.yml
-data
-certs
-nginx.conf
-custom.json
-.gitignore
-EOF
+          echo "备份目录已创建"
 
-      # 生成 rsync 排除文件
-      - name: Generate rsync exclude list
+      # 步骤 7: 识别并备份保护文件
+      - name: Backup protected files
+        id: backup_files
         run: |
-          while read pattern; do
-            find target-repo -path "*/$pattern" -print >> /tmp/repo-backup/protected-files.txt 2>/dev/null || true
-          done < /tmp/repo-backup/protected-files.list
+          protected_patterns=(
+            "README*.md"
+            "LICENSE*"
+            ".github/workflows/*"
+            "config/*"
+            "*.env"
+            "docker-compose*.yml"
+            "data/*"
+            "certs/*"
+            "nginx.conf"
+            "custom.json"
+            ".gitignore"
+          )
+          
+          # 查找并备份文件
+          for pattern in "${protected_patterns[@]}"; do
+            find target-repo -name "$pattern" -exec cp --parents -t /tmp/repo-backup {} + 2>/dev/null || true
+          done
+          
+          # 计算备份文件数量
+          protected_count=$(find /tmp/repo-backup -type f | wc -l)
+          echo "protected_files_count=$protected_count" >> $GITHUB_OUTPUT
+          echo "已备份 $protected_count 个保护文件"
 
-          echo "target-repo/.github" >> /tmp/repo-backup/protected-files.txt
-          cat /tmp/repo-backup/protected-files.txt | sed 's#^target-repo/##' > /tmp/repo-backup/rsync-excludes.txt
-
-          count=$(sort -u /tmp/repo-backup/protected-files.txt | wc -l)
-          echo "protected_files_count=$count" >> $GITHUB_OUTPUT
-
-      # 备份保护文件
-      - name: Backup protected content
-        run: |
-          mkdir -p /tmp/repo-backup/protected
-          while read file; do
-            if [ -e "$file" ]; then
-              rel=${file#target-repo/}
-              mkdir -p "/tmp/repo-backup/protected/$(dirname "$rel")"
-              cp -r "$file" "/tmp/repo-backup/protected/$rel"
-            fi
-          done < /tmp/repo-backup/protected-files.txt
-
-      # 获取版本信息
-      - name: Get source version
-        id: source_version
-        run: |
-          cd source-repo
-          echo "commit_hash=$(git rev-parse --short HEAD)" >> $GITHUB_OUTPUT
-          echo "full_hash=$(git rev-parse HEAD)" >> $GITHUB_OUTPUT
-          echo "commit_date=$(git log -1 --format=%cd --date=format:'%Y-%m-%d')" >> $GITHUB_OUTPUT
-
-      - name: Get target version
-        id: target_version
-        run: |
-          cd target-repo
-          echo "TARGET_COMMIT=$(git rev-parse --short HEAD)" >> $GITHUB_ENV
-
-      # 同步内容（排除保护文件）
+      # 步骤 8: 执行同步操作
       - name: Sync repositories
         run: |
+          # 使用rsync进行同步，排除.git目录和备份文件
           rsync -av --delete \
             --exclude=.git \
-            --exclude-from=/tmp/repo-backup/rsync-excludes.txt \
+            --exclude="/tmp/repo-backup" \
             source-repo/ target-repo/
+          echo "仓库内容同步完成"
 
-      # 恢复保护内容
+      # 步骤 9: 恢复保护文件
       - name: Restore protected content
         run: |
-          cd /tmp/repo-backup/protected
-          find . -type f -o -type d | while read path; do
-            [ "$path" = "." ] && continue
-            target="$GITHUB_WORKSPACE/target-repo/${path#./}"
-            mkdir -p "$(dirname "$target")"
-            cp -r "$path" "$target"
-          done
+          if [ -d "/tmp/repo-backup" ]; then
+            cp -r /tmp/repo-backup/* target-repo/
+            echo "已恢复 ${{ steps.backup_files.outputs.protected_files_count }} 个保护文件"
+          else
+            echo "无保护文件需要恢复"
+          fi
 
-      # 提交并推送
+      # 步骤 10: 提交和推送变更
       - name: Commit and push changes
         id: commit_push
         run: |
           cd target-repo
-          git config user.name "${{ env.GIT_USER_NAME }}"
-          git config user.email "${{ env.GIT_USER_EMAIL }}"
+          git config user.name "GitHub Actions Sync"
+          git config user.email "actions@github.com"
           git add -A
-
-          if git diff-index --quiet HEAD --; then
-            echo "no_changes=true" >> $GITHUB_OUTPUT
-            echo "changes_count=0" >> $GITHUB_OUTPUT
-          else
-            count=$(git diff --name-only HEAD | wc -l)
-            echo "changes_count=$count" >> $GITHUB_OUTPUT
-            msg="🔄 自动同步: 来自 ${{ env.SOURCE_REPO }}@${{ steps.source_version.outputs.commit_hash }}"
-            msg+="\n\n📝 更新 $count 个文件"
-            msg+="\n🛡️ 保留 ${{ steps.generate_rsync_exclude.outputs.protected_files_count }} 个文件"
-            msg+="\n📅 来源时间: ${{ steps.source_version.outputs.commit_date }}"
-            git commit -m "$msg"
+          
+          changes_count=0
+          if ! git diff-index --quiet HEAD --; then
+            changes_count=$(git diff --name-only HEAD | wc -l)
+            commit_msg="自动同步: 来自 bqlpfy/forward-panel@${{ env.SOURCE_COMMIT_HASH }}"
+            commit_msg+="\n\n• 更新文件: $changes_count"
+            commit_msg+="\n• 保留文件: ${{ steps.backup_files.outputs.protected_files_count }}"
+            git commit -m "$(echo -e "$commit_msg")"
             git push origin HEAD:${{ env.DEFAULT_BRANCH }}
-            echo "commit_msg=$msg" >> $GITHUB_OUTPUT
-          fi
-
-      # 设置时区
-      - name: Set Shanghai time
-        id: set_time
-        run: |
-          CURRENT_TIME=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M %Z')
-          CURRENT_TIME_SHORT=$(TZ='Asia/Shanghai' date +'%H:%M %Z')
-          echo "CURRENT_TIME=$CURRENT_TIME" >> $GITHUB_ENV
-          echo "CURRENT_TIME_SHORT=$CURRENT_TIME_SHORT" >> $GITHUB_ENV
-
-      # 设置变更状态标签
-      - name: Set change status
-        run: |
-          if [[ "${{ steps.commit_push.outputs.no_changes }}" == "true" ]]; then
-            echo "CHANGE_STATUS=🟢 无变更" >> $GITHUB_ENV
+            echo "changes_count=$changes_count" >> $GITHUB_OUTPUT
+            echo "已提交变更并推送"
           else
-            echo "CHANGE_STATUS=🟡 有更新" >> $GITHUB_ENV
+            echo "changes_count=0" >> $GITHUB_OUTPUT
+            echo "无变更可提交"
           fi
 
-      # Telegram通知
+      # 步骤 11: 清理临时文件
+      - name: Cleanup
+        run: |
+          rm -rf source-repo
+          rm -rf /tmp/repo-backup
+          echo "临时文件清理完成"
+
+      # 步骤 12: 简化版 Telegram 通知
       - name: Telegram Notification
         if: ${{ always() && env.TELEGRAM_ENABLED == 'true' }}
         uses: appleboy/telegram-action@v1.0.0
@@ -184,14 +154,14 @@ EOF
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           parse_mode: markdown
           message: |
-            ${{ job.status == 'success' && '✅' || '🚨' }} *Forward Panel 同步报告 | ${{ env.CURRENT_TIME_SHORT }}*
-            ━━━━━━━━━━━━━━━━━━━━━━━━
-            • **目标仓库**: [${{ env.TARGET_REPO }}](https://github.com/${{ env.TARGET_REPO }})
-            • **源仓库**: [${{ env.SOURCE_REPO }}@${{ steps.source_version.outputs.commit_hash }}](https://github.com/${{ env.SOURCE_REPO }}/commit/${{ steps.source_version.outputs.full_hash }})
-            • **目标版本**: [@${{ env.TARGET_COMMIT }}](https://github.com/${{ env.TARGET_REPO }}/commit/${{ env.TARGET_COMMIT }})
+            ${{ job.status == 'success' && '✅' || '❌' }} *${{ github.workflow }} 同步报告*
+            ───────────────────
             • **状态**: ${{ job.status == 'success' && '成功' || '失败' }}
-            • **同步内容**: ${{ env.CHANGE_STATUS }}
-            • **变更文件**: ${{ steps.commit_push.outputs.changes_count }}
-            • **保留文件**: ${{ steps.generate_rsync_exclude.outputs.protected_files_count }}
-            • **运行时间**: ${{ env.CURRENT_TIME }}
-            [查看工作流运行](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
+            • **源提交**: [\`${{ env.SOURCE_COMMIT_HASH }}\`](${{ env.SOURCE_COMMIT_LINK }})
+            • **目标分支**: \`${{ env.DEFAULT_BRANCH }}\`
+            • **变更文件**: ${{ steps.commit_push.outputs.changes_count || '0' }}
+            • **保留文件**: ${{ steps.backup_files.outputs.protected_files_count || '0' }}
+            • **执行时间**: ${{ env.CURRENT_TIME }}
+            ───────────────────
+            ${{ job.status == 'success' && '✅ 同步完成' || '❌ 同步失败' }}
+            [查看日志](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})
