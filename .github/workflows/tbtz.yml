@@ -1,4 +1,4 @@
-name: Auto Sync from oiov/wr.do
+name: Auto Sync from bqlpfy/forward-panel
 
 on:
   schedule:
@@ -10,11 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # 获取目标仓库的默认分支
-      - name: Detect default branch
+      - name: Detect target default branch
         id: branch_detector
         run: |
           DEFAULT_BRANCH=$(curl -s -H "Authorization: token ${{ secrets.SYNC_TOKEN }}" \
-          "https://api.github.com/repos/13ztop/wr.do" | jq -r .default_branch)
+          "https://api.github.com/repos/13ztop/forward-panel" | jq -r .default_branch)
           echo "Detected default branch: $DEFAULT_BRANCH"
           echo "DEFAULT_BRANCH=$DEFAULT_BRANCH" >> $GITHUB_ENV
 
@@ -23,22 +23,22 @@ jobs:
         uses: actions/checkout@v4
         with:
           token: ${{ secrets.SYNC_TOKEN }}
-          repository: 13ztop/wr.do
+          repository: 13ztop/forward-panel
           path: target-repo
           ref: ${{ env.DEFAULT_BRANCH }}
           fetch-depth: 0
 
-      # 克隆源仓库（公共仓库）
+      # 克隆源仓库
       - name: Clone source repo
         run: |
-          git clone --depth 1 https://github.com/oiov/wr.do.git source-repo
-          echo "源仓库 oiov/wr.do 克隆完成"
+          git clone --depth 1 https://github.com/bqlpfy/forward-panel.git source-repo
+          echo "源仓库 bqlpfy/forward-panel 克隆完成"
 
       # 创建备份目录
       - name: Create backup directory
         run: mkdir -p /tmp/repo-backup
 
-      # 识别需要保留的文件
+      # 识别需要保留的文件（根据仓库内容自定义）
       - name: Identify protected files
         id: find_protected
         run: |
@@ -47,8 +47,9 @@ jobs:
             "README.md"
             "LICENSE"
             ".github/workflows/*"  # 整个工作流目录
-            "config.json"          # 配置文件
-            "custom-scripts/*"     # 自定义脚本目录
+            "config.yaml"          # 配置文件
+            "docker-compose.yml"   # Docker配置
+            "env.example"          # 环境示例文件
           )
           
           # 创建保留文件列表
@@ -57,7 +58,7 @@ jobs:
             find target-repo -path "*/$pattern" -print >> /tmp/repo-backup/protected-files.txt 2>/dev/null || true
           done
           
-          # 添加特殊处理（处理带点的仓库名）
+          # 添加特殊处理
           echo "target-repo/.gitignore" >> /tmp/repo-backup/protected-files.txt
           
           # 保存文件数量
@@ -128,7 +129,7 @@ jobs:
           
           echo "保护文件恢复完成"
 
-      # 提交和推送变更（使用强制推送解决受保护分支问题）
+      # 提交和推送变更
       - name: Commit and push changes
         id: commit_push
         run: |
@@ -148,14 +149,14 @@ jobs:
             echo "changes_count=$changes_count" >> $GITHUB_OUTPUT
             
             # 生成提交信息
-            commit_msg="自动同步: 来自 oiov/wr.do@${{ steps.source_version.outputs.commit_hash }}"
+            commit_msg="自动同步: 来自 bqlpfy/forward-panel@${{ steps.source_version.outputs.commit_hash }}"
             commit_msg+="\n\n更新 $changes_count 个文件"
             if [ ${{ steps.find_protected.outputs.protected_files_count }} -gt 0 ]; then
               commit_msg+=", 保留 ${{ steps.find_protected.outputs.protected_files_count }} 个保护文件"
             fi
             
             git commit -m "$commit_msg"
-            # 使用强制推送解决受保护分支问题
+            # 使用强制推送确保能更新受保护分支
             git push --force-with-lease origin HEAD:${{ env.DEFAULT_BRANCH }}
             
             # 获取提交后的新commit hash
@@ -181,7 +182,7 @@ jobs:
           echo "CURRENT_TIME=$CURRENT_TIME" >> $GITHUB_ENV
           echo "CURRENT_TIME_SHORT=$CURRENT_TIME_SHORT" >> $GITHUB_ENV
 
-      # 同步成功通知（使用提交后的新commit hash）
+      # 同步成功通知
       - name: Notify Telegram on Sync Success
         if: success() && steps.commit_push.outputs.commit_msg
         uses: appleboy/telegram-action@master
@@ -189,17 +190,16 @@ jobs:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
-            🔄 *wr.do 同步报告 | ${{ steps.source_version.outputs.commit_date }} (${{ env.CURRENT_TIME_SHORT }})*
+            🔄 *forward-panel 同步报告 | ${{ steps.source_version.outputs.commit_date }} (${{ env.CURRENT_TIME_SHORT }})*
             ━━━━━━━━━━━━━━━━━━━━━━━━
-            📦 **源仓库**: [oiov/wr.do@${{ steps.source_version.outputs.commit_hash }}](https://github.com/oiov/wr.do/commit/${{ steps.source_version.outputs.full_hash }})
-            🏠 **目标仓库**: [13ztop/wr.do@${{ env.TARGET_COMMIT_AFTER }} (${{ env.TARGET_BRANCH }})](https://github.com/13ztop/wr.do/commit/${{ env.TARGET_FULL_HASH_AFTER }})
+            📦 **源仓库**: [bqlpfy/forward-panel@${{ steps.source_version.outputs.commit_hash }}](https://github.com/bqlpfy/forward-panel/commit/${{ steps.source_version.outputs.full_hash }})
+            🏠 **目标仓库**: [13ztop/forward-panel@${{ env.TARGET_COMMIT_AFTER }}](https://github.com/13ztop/forward-panel/commit/${{ env.TARGET_FULL_HASH_AFTER }})
             ━━━━━━━━━━━━━━━━━━━━━━━━
             • **变更文件**: ${{ steps.commit_push.outputs.changes_count }} 个
             • **保留文件**: ${{ steps.find_protected.outputs.protected_files_count }} 个
             • **同步时间**: ${{ env.CURRENT_TIME }}
             ━━━━━━━━━━━━━━━━━━━━━━━━
             ✅ 同步成功! 仓库已更新
-            [查看提交详情](https://github.com/13ztop/wr.do/commit/${{ env.TARGET_FULL_HASH_AFTER }})
           parse_mode: markdown
 
       # 无变更通知
@@ -210,17 +210,16 @@ jobs:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
-            ℹ️ *wr.do 同步报告 | ${{ steps.source_version.outputs.commit_date }} (${{ env.CURRENT_TIME_SHORT }})*
+            ℹ️ *forward-panel 同步报告 | ${{ steps.source_version.outputs.commit_date }} (${{ env.CURRENT_TIME_SHORT }})*
             ━━━━━━━━━━━━━━━━━━━━━━━━
-            📦 **源仓库**: [oiov/wr.do@${{ steps.source_version.outputs.commit_hash }}](https://github.com/oiov/wr.do)
-            🏠 **目标仓库**: [13ztop/wr.do@${{ env.TARGET_COMMIT }}](https://github.com/13ztop/wr.do)
+            📦 **源仓库**: [bqlpfy/forward-panel@${{ steps.source_version.outputs.commit_hash }}](https://github.com/bqlpfy/forward-panel)
+            🏠 **目标仓库**: [13ztop/forward-panel@${{ env.TARGET_COMMIT }}](https://github.com/13ztop/forward-panel)
             ━━━━━━━━━━━━━━━━━━━━━━━━
             • **保留文件**: ${{ steps.find_protected.outputs.protected_files_count }} 个
             • **同步状态**: 内容一致，无需更新
             • **检测时间**: ${{ env.CURRENT_TIME }}
             ━━━━━━━━━━━━━━━━━━━━━━━━
             ✅ 仓库已是最新状态
-            [查看仓库](https://github.com/13ztop/wr.do)
           parse_mode: markdown
 
       # 同步失败通知
@@ -231,7 +230,7 @@ jobs:
           to: ${{ secrets.TELEGRAM_CHAT_ID }}
           token: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           message: |
-            ‼️ *wr.do 同步失败 | ${{ env.CURRENT_TIME_SHORT }}*
+            ‼️ *forward-panel 同步失败 | ${{ env.CURRENT_TIME_SHORT }}*
             ━━━━━━━━━━━━━━━━━━━━━━━━
             🔧 **工作流**: [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})
             ⏰ **发生时间**: ${{ env.CURRENT_TIME }}
