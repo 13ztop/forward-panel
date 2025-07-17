@@ -10,6 +10,7 @@ show_update_notice() {
   echo "==============================================="
   echo "🚨🚨🚨 重要更新说明 🚨🚨🚨"
   echo "==============================================="
+  echo "面板版本大于等于1.0.6可以直接更新，无需查看"
   echo "⚠️  此次更新包含重要的数据库结构变更！"
   echo "⚠️  使用前务必前往群组查看更新说明！"
   echo "⚠️  否则可能导致数据灰飞烟灭！"
@@ -24,9 +25,9 @@ show_update_notice() {
 }
 
 # 全局下载地址配置
-DOCKER_COMPOSEV4_URL="https://file.tes.cc/docker-compose-v4.yml"
-DOCKER_COMPOSEV6_URL="https://file.tes.cc/docker-compose-v6.yml"
-GOST_SQL_URL="https://file.tes.cc/gost.sql"
+DOCKER_COMPOSEV4_URL="https://raw.githubusercontent.com/bqlpfy/forward-panel/refs/heads/main/docker-compose-v4.yml"
+DOCKER_COMPOSEV6_URL="https://raw.githubusercontent.com/bqlpfy/forward-panel/refs/heads/main/docker-compose-v6.yml"
+GOST_SQL_URL="https://raw.githubusercontent.com/bqlpfy/forward-panel/refs/heads/main/gost.sql"
 
 # 根据IPv6支持情况选择docker-compose URL
 get_docker_compose_url() {
@@ -233,14 +234,14 @@ EOF
   $DOCKER_CMD up -d
 
   echo "🎉 部署完成"
-  echo "✅ .env 文件内容："
-  echo "DB_NAME=$DB_NAME"
-  echo "DB_USER=$DB_USER"
-  echo "DB_PASSWORD=$DB_PASSWORD"
-  echo "JWT_SECRET=$JWT_SECRET"
-  echo "SERVER_HOST=$SERVER_HOST_PORT"
-  echo "FRONTEND_PORT=$FRONTEND_PORT"
-  echo "BACKEND_PORT=$BACKEND_PORT"
+  echo "🌐 访问地址："
+  echo "前端地址: http://$SERVER_HOST:$FRONTEND_PORT"
+  echo "后端地址: http://$SERVER_HOST:$BACKEND_PORT"
+  echo ""
+  echo "📖 部署完成后请阅读下使用文档，求求了啊，不要上去就是一顿操作"
+  echo "📚 文档地址: https://tes.cc/guide.html"
+  echo "💡 默认管理员账号: admin_user / admin_user"
+  echo "⚠️  登录后请立即修改默认密码！"
   
 
 }
