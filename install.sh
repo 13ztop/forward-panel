@@ -129,7 +129,7 @@ install_gost() {
     echo "✅ 使用默认下载地址: $DOWNLOAD_URL"
   fi
   
-  # 检查并安装 tcpkill
+    # 检查并安装 tcpkill
   check_and_install_tcpkill
   mkdir -p "$INSTALL_DIR"
 
